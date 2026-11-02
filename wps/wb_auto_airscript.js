@@ -8,7 +8,7 @@
  *   4. 结果回写表格 + 推送飞书卡片。
  *
  * 配置（在名为「签到自动化」的工作表里，脚本会自动创建并写表头）：
- *   B1 = WB_ACCESS_TOKEN  （必填，由本机 refresh_token.py 导出，约 28 天更新一次）
+ *   B1 = WB_ACCESS_TOKEN  （必填，由本机 refresh_buddy_token.py 导出，约 28 天更新一次）
  *   B2 = FEISHU_WEBHOOK   （选填，飞书群自定义机器人地址）
  *   B3 = WB_ENDPOINT      （选填，留空即默认 https://copilot.tencent.com）
  *   B5/B6/B7/B8/B9 = 运行后自动回写：签到结论 / 猫猫结论 / 整体 / 上次运行时间 / 飞书推送
@@ -537,7 +537,7 @@ function main() {
   var endpoint = readCell("B3") || ENDPOINT_DEFAULT;
 
   if (!token) {
-    log("缺少 token：请在「" + SHEET_NAME + "」表的 B1 粘贴 refresh_token.py 导出的凭证");
+    log("缺少 token：请在「" + SHEET_NAME + "」表的 B1 粘贴 refresh_buddy_token.py 导出的凭证");
     writeCell("B5", "❌ 缺少 token（B1）");
     writeCell("B8", nowBeijing());
     return;

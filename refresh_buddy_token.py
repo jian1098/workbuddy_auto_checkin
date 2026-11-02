@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""refresh_token.py —— 在你自己的电脑上运行，把 WorkBuddy 登录态导出成 GitHub Secret。
+"""refresh_buddy_token.py —— 在你自己的电脑上运行，把 WorkBuddy 登录态导出成 GitHub Secret。
 
 云端 runner 没有本机登录态，也无法解密 Electron safeStorage 保护的凭据；
 因此 token 必须由本机脚本导出，再写入仓库 Secret（绝不进仓库、绝不进日志）。
+（Trae 的凭证用同目录的 refresh_trae_token.py 导出。）
 
 用法：
-    python refresh_token.py                       # 打印 token + 手动配置指引
-    python refresh_token.py --gh-repo OWNER/REPO  # 有 gh CLI 时直接写入 Secret
-                                                  # 没有 gh 则打印 token + 手动配置指引
-（打包成 refresh_token.exe 后用法相同，双击运行等价于无参数形式）
+    python refresh_buddy_token.py                       # 打印 token + 手动配置指引
+    python refresh_buddy_token.py --gh-repo OWNER/REPO  # 有 gh CLI 时直接写入 Secret
+                                                        # 没有 gh 则打印 token + 手动配置指引
+（打包成 refresh_buddy_token.exe 后用法相同，双击运行等价于无参数形式）
 
 安全约定：
   - 明文 token 只出现在本进程内存与最终那一次目标位置；

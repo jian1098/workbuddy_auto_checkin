@@ -1,6 +1,8 @@
 # workbuddy_auto_checkin
 
-WorkBuddy「Buddy 加油站」的每日自动化：**签到领积分**、**派猫猫旅行并领回礼物**，结果推送到飞书。
+WorkBuddy「Buddy 加油站」的每日自动化：**签到领积分**、**派猫猫旅行并领回礼物**，外加 **Trae（国内版 trae.cn）每日签到领积分**，结果推送到飞书。
+
+> Trae 签到只在 GitHub Actions 版里有，WPS 金山文档版目前只做 WorkBuddy。
 
 跑在 GitHub Actions 上，按 cron 每天定时执行，不需要任何常开设备。
 
@@ -14,8 +16,9 @@ WorkBuddy「Buddy 加油站」的每日自动化：**签到领积分**、**派�
 > | 结果 | Actions 日志 / 飞书卡片 | 直接回写表格 / 飞书卡片 |
 >
 > 两种版本的 token 都由本机导出一次（[第 4 步](#第-4-步导出登录凭证二选一)）：
-> 装了 Python 就跑 `refresh_token.py`；没装 Python 直接下载仓库里的
-> **`refresh_token.exe`** 双击运行，无需任何环境。
+> 装了 Python 就跑 `refresh_buddy_token.py`；没装 Python 直接下载仓库里的
+> **`refresh_buddy_token.exe`** 双击运行，无需任何环境。
+> 要顺带签 Trae 的，再跑一次 `refresh_trae_token.py` 浏览器登录导出 Trae 凭证（[第 5 步](#第-5-步把两个-secret-填进仓库)）。
 
 ## 特性
 
@@ -30,9 +33,10 @@ WorkBuddy「Buddy 加油站」的每日自动化：**签到领积分**、**派�
 ```text
 本机（一次性）                      GitHub                           外部
 ┌──────────────────┐    gh secret   ┌────────────────────┐
-│ refresh_token.py │ ─────────────► │ Secret:            │
+│ refresh_*.py     │ ─────────────► │ Secret:            │
 │  读登录态 → 解密 │                │  WB_ACCESS_TOKEN   │
 └──────────────────┘                │  FEISHU_WEBHOOK    │
+                                    │  TRAE_*（可选）    │
                                     └─────────┬──────────┘
                                               │ 每天 cron
                                     ┌─────────▼──────────┐        ┌──────────────┐
@@ -49,7 +53,7 @@ WorkBuddy「Buddy 加油站」的每日自动化：**签到领积分**、**派�
 
 桌面端把会话写在 `workbuddy-desktop.info` 里，其中 `accessToken` 是 Electron `safeStorage` 保护的 `$wbEncrypted` 信封（AES-256-GCM，密钥由客户端运行时持有）。云端 runner 既没有这份文件，也没有解开它所需的运行时，因此**无法在云端现取 token**。
 
-`refresh_token.py` 的做法是：读出加密信封 → 以 `ELECTRON_RUN_AS_NODE=1` 起一个 WorkBuddy 子进程 → 把信封通过 stdin 递进去，由客户端自己的运行时解密 → 从 stdout 取回明文 token。解密材料全程不落盘。
+`refresh_buddy_token.py` 的做法是：读出加密信封 → 以 `ELECTRON_RUN_AS_NODE=1` 起一个 WorkBuddy 子进程 → 把信封通过 stdin 递进去，由客户端自己的运行时解密 → 从 stdout 取回明文 token。解密材料全程不落盘。
 
 ## 快速开始
 
@@ -58,7 +62,7 @@ WorkBuddy「Buddy 加油站」的每日自动化：**签到领积分**、**派�
 - 一个 GitHub 账号
 - 一台装过 WorkBuddy **并且登录过**的电脑（只在配置时用一次）
 - 一个飞书群（自己建一个只有自己的也行），用来收消息
-- 电脑上有 Python 3.8+（没有也行——用仓库里的 `refresh_token.exe`，见第 4 步）
+- 电脑上有 Python 3.8+（没有也行——用仓库里的 `refresh_buddy_token.exe`，见第 4 步）
 
 ### 容易搞混的一点，先说清楚
 
@@ -100,7 +104,7 @@ WorkBuddy「Buddy 加油站」的每日自动化：**签到领积分**、**派�
 
 **先选运行形式：**
 
-- **没装 Python？** 直接双击仓库里的 **`refresh_token.exe`**（用法与 `.py` 完全一致，把下面命令里的 `python refresh_token.py` 换成 `refresh_token.exe` 即可）。首次运行 Windows SmartScreen 可能拦截，点 **更多信息 → 仍要运行**。
+- **没装 Python？** 直接双击仓库里的 **`refresh_buddy_token.exe`**（用法与 `.py` 完全一致，把下面命令里的 `python refresh_buddy_token.py` 换成 `refresh_buddy_token.exe` 即可）。首次运行 Windows SmartScreen 可能拦截，点 **更多信息 → 仍要运行**。
 - 装了 Python：继续往下按命令操作（脚本零第三方依赖，只需 Python 3.8+）。
 
 **方式 A：电脑上装了 gh CLI —— 自动写入，最省事**
@@ -108,7 +112,7 @@ WorkBuddy「Buddy 加油站」的每日自动化：**签到领积分**、**派�
 在项目文件夹里运行：
 
 ```
-python refresh_token.py --gh-repo 你的用户名/workbuddy_auto_checkin
+python refresh_buddy_token.py --gh-repo 你的用户名/workbuddy_auto_checkin
 ```
 
 脚本会解密并直接把 token 写进你仓库的 Secret，屏幕显示「已写入」即可跳到第 5 步。
@@ -118,7 +122,7 @@ python refresh_token.py --gh-repo 你的用户名/workbuddy_auto_checkin
 在项目文件夹里运行：
 
 ```
-python refresh_token.py
+python refresh_buddy_token.py
 ```
 
 屏幕上会打印一长串字符（下图涂黑的部分就是它），**完整复制 `----- 以下为 token -----` 到 `----- 以上为 token -----` 之间**的内容，下一步手动粘进 GitHub。
@@ -143,10 +147,35 @@ python refresh_token.py
 > 方式 A 已经自动写入 `WB_ACCESS_TOKEN` 的，这里只需要再填 `FEISHU_WEBHOOK` 一条。
 > 填完这个页面应该能看到两条记录（如上面截图所示）。
 
+**可选：顺带签 Trae** —— 再加下面的 Secret（不加就只签 WorkBuddy，飞书里 Trae 一栏显示「跳过」）：
+
+| Name | Secret 里填什么 |
+| --- | --- |
+| `TRAE_REFRESH_TOKEN` | Trae 的 refreshToken（必填） |
+| `TRAE_DEVICE_ID` | Trae 客户端的设备号（强烈建议填） |
+| `TRAE_USER_ID` | Trae 用户 ID（选填） |
+
+这三个值用仓库里的 `refresh_trae_token.py` 拿（登录流程参考 [auto-checkin](https://github.com/iicookies/auto-checkin) 的 `login.py trae`）：
+
+```
+python refresh_trae_token.py --gh-repo 你的用户名/workbuddy_auto_checkin   # 装了 gh：自动写入三个 Secret
+python refresh_trae_token.py                                             # 没装 gh：打印出来手动粘贴
+```
+
+脚本会打开浏览器让你用手机号 + 验证码登录 Trae，登录后浏览器跳回 `127.0.0.1:18080`（正常现象），
+脚本拿到 refreshToken 后先换一次 token 校验，再写入 / 打印 `TRAE_REFRESH_TOKEN`、`TRAE_DEVICE_ID`、`TRAE_USER_ID`。
+
+- **设备号**：Trae 按设备去重，用客户端真实的 16 位数字设备号最稳。脚本会自动从
+  `%APPDATA%\TRAE SOLO CN\User\globalStorage\storage.json`（或 `Trae CN` / `Trae` 目录下同名文件）里
+  读 `iCubeAuthInfo://icube-dc:` 后面的 16 位数字，所以**最好在装过并登录过 Trae 客户端的电脑上跑**。
+  读不到时退回服务端绑定的设备号，有可能被风控返回 9074「当前参与用户太多」，屏幕上会提示设备号来源。
+- **和本机 auto-checkin 共用同一个 refreshToken 时**：如果服务端换 token 时让旧 refreshToken 失效，两边会互相挤掉。
+  出现「refreshToken 被拒」就重跑 `refresh_trae_token.py` 更新 Secret。
+
 ### 第 6 步：手动跑一次验证
 
 1. 打开你的仓库 → 点上方 **Actions** 页签
-2. 左侧选 **Buddy 加油站每日自动化**
+2. 左侧选 **WorkBuddy&Trae每日签到自动化**
 3. 右侧点 **Run workflow** 下拉，再点绿色的 **Run workflow**
 4. 等十几秒，刷新页面，飞书应该收到一条消息
 
@@ -158,12 +187,17 @@ python refresh_token.py
 
 | 变量 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `WB_ACCESS_TOKEN` | 是 | — | 访问令牌。缺失则直接退出（exit 2） |
+| `WB_ACCESS_TOKEN` | 否† | — | WorkBuddy 访问令牌。缺失则跳过 WorkBuddy 签到与猫猫 |
+| `TRAE_REFRESH_TOKEN` | 否† | — | Trae refreshToken，每次运行换一次 accessToken。缺失则跳过 Trae |
+| `TRAE_DEVICE_ID` | 建议 | 服务端 `BoundDeviceID` | Trae 客户端 16 位设备号，签到按设备去重 |
+| `TRAE_USER_ID` | 否 | — | Trae 用户 ID，换 token 时一并提交 |
 | `FEISHU_WEBHOOK` | 建议 | — | 飞书自定义机器人地址。缺失则不推送，仅打印日志 |
 | `WB_ENDPOINT` | 否 | `https://copilot.tencent.com` | 接口地址 |
 | `WB_RESULT_FILE` | 否 | — | 写入 Markdown 汇总表，供 Actions 的 step summary 使用 |
 
-### 本机侧（`refresh_token.py`）
+† `WB_ACCESS_TOKEN` 与 `TRAE_REFRESH_TOKEN` 至少配一个，都没配则直接退出（exit 2）。
+
+### 本机侧（`refresh_buddy_token.py`）
 
 | 变量 | 说明 |
 | --- | --- |
@@ -183,11 +217,16 @@ python refresh_token.py
 | 猫猫在途中 | 汇报位置与预计到家时间，不派出 | `IN_TRIP` |
 | 猫猫空闲且名额未用完 | 派出一趟 | `DEPARTED` |
 | 今日名额已用完 | 读服务端 `daily_limit_reached`，不派出 | `LIMIT_REACHED` |
-| 认证被拒（401/403） | 提示重新运行 `refresh_token.py` | `AUTH` |
+| 认证被拒（401/403） | 提示重新运行 `refresh_buddy_token.py` | `AUTH` |
 | 网络不可达 | 有限重试后汇报，不误报成功 | `NETWORK` |
 | 猫猫模块异常 | 捕获后单独汇报，不影响签到 | `ERROR` |
 | 旅行状态取值未知 | 原样汇报，不做写操作 | `UNKNOWN_STATE` |
 | 领取返回无法识别 | 汇报原始返回，不臆断成功 | `UNKNOWN` |
+| Trae 今天未领 | 调用 claim | `CLAIMED` |
+| Trae 今天已领 | 不重复领取 | `ALREADY` |
+| Trae 限流（9074） | 退避重试 3 次（20s / 40s），重试前先查状态 | `RATE_LIMIT` |
+| Trae refreshToken 被拒 / 认证失败 | 提示重跑 `refresh_trae_token.py` 更新 Secret | `AUTH` |
+| 未配置某一项凭证 | 该项跳过，不计入整体成败 | `SKIPPED` |
 
 派出名额的判断读服务端下发的 `daily_limit_reached`，而不是硬撞 `depart` 接口等它报错。
 
@@ -195,9 +234,9 @@ python refresh_token.py
 
 | 码 | 含义 |
 | --- | --- |
-| `0` | 签到成功 |
-| `1` | 签到未达成（猫猫失败不在此列） |
-| `2` | 缺少 `WB_ACCESS_TOKEN` |
+| `0` | 已配置的签到（WorkBuddy / Trae）全部成功 |
+| `1` | 有签到未达成（猫猫失败不在此列） |
+| `2` | `WB_ACCESS_TOKEN` 与 `TRAE_REFRESH_TOKEN` 都没配 |
 
 workflow 中脚本以 `exit 0` 收尾，只对未完成项发 `::warning::`，因此一次运行显示绿色不代表签到一定成功——**以日志、step summary 与飞书卡片为准**。
 
@@ -215,19 +254,31 @@ GET  /v2/activity/growth/buddy/travel/config     获取可派目的地
 POST /v2/activity/growth/buddy/travel/depart     派出一趟
 ```
 
+Trae（实现参考 auto-checkin 的 `checkin.py`）：
+
+```text
+POST api.trae.com.cn/cloudide/api/v3/trae/oauth/ExchangeToken   refreshToken 换 accessToken
+POST api.trae.cn/trae/api/v2/ug/checkin_credits/status          查询今日是否已领
+POST api.trae.cn/trae/api/v2/ug/checkin_credits/claim           领取每日积分
+POST api.trae.cn/trae/api/v2/pay/ide_user_ent_usage             查询当前积分
+```
+
+鉴权头 `Authorization: Cloud-IDE-JWT <token>`，并带 `x-device-id`（设备去重）与 `X-User-Region: CN`。
+
 时间戳字段（`arrive_at` / `depart_at` / `server_now`）为**秒级**，与毫秒混用会算出错误的剩余时间。
 
 ## 项目结构
 
 ```text
-wb_auto.py                    云端执行主体：签到、领奖、派出、推送
-refresh_token.py              本机一次性操作：导出 token / 写入 Secret
-refresh_token.exe             上者的免 Python 打包版（Windows x64，双击即用）
+wb_auto.py                    云端执行主体：WorkBuddy 签到、领奖、派出，Trae 签到，推送
+refresh_buddy_token.py        本机一次性操作：导出 WorkBuddy token / 写入 Secret
+refresh_buddy_token.exe       上者的免 Python 打包版（Windows x64，双击即用）
+refresh_trae_token.py         本机一次性操作：浏览器登录 Trae，导出 TRAE_* / 写入 Secret
 .github/workflows/daily.yml   cron 定义与执行步骤
 wps/                          WPS 金山文档版（脚本 + 说明，见 wps/README.md）
 ```
 
-> `refresh_token.exe` 由 `refresh_token.py` 经 PyInstaller 打包（零第三方依赖），
+> `refresh_buddy_token.exe` 由 `refresh_buddy_token.py` 经 PyInstaller 打包（零第三方依赖），
 > 每次改动 `.py` 后需要重新构建。未做代码签名，SmartScreen 的提示属正常现象。
 
 ## 安全设计
@@ -240,7 +291,7 @@ wps/                          WPS 金山文档版（脚本 + 说明，见 wps/RE
 
 ## 常见问题
 
-**令牌过期** — token 由客户端签发，有效期约 28 天（`expiresIn` 2419200）。日志或飞书出现「认证被拒」时，本机重跑 `python refresh_token.py --gh-repo OWNER/REPO` 覆盖即可（`OWNER/REPO` 换成你自己的仓库；exe 同理：`refresh_token.exe --gh-repo OWNER/REPO`）。
+**令牌过期** — token 由客户端签发，有效期约 28 天（`expiresIn` 2419200）。日志或飞书出现「认证被拒」时，本机重跑 `python refresh_buddy_token.py --gh-repo OWNER/REPO` 覆盖即可（`OWNER/REPO` 换成你自己的仓库；exe 同理：`refresh_buddy_token.exe --gh-repo OWNER/REPO`）。
 
 **fork 之后 Actions 页签是空的** — fork 来的仓库默认不启用 Actions。进 Actions 页签，点页面中间的 **I understand my workflows, go ahead and enable them** 启用一次即可。
 

@@ -9,9 +9,9 @@
 - 一个 WPS/金山文档账号
 - `token`：在本机导出一次（这一步 WPS 替代不了，解密密钥绑在本机客户端里，约 28 天重复一次）。
   两种形式任选：
-  - 没装 Python：下载仓库里的 **`refresh_token.exe`**，双击运行，复制 `----- 以下为 token -----`
+  - 没装 Python：下载仓库里的 **`refresh_buddy_token.exe`**，双击运行，复制 `----- 以下为 token -----`
     到 `----- 以上为 token -----` 之间那串字符（首次运行 SmartScreen 拦截时点「更多信息 → 仍要运行」）
-  - 装了 Python：运行 `refresh_token.py`，同样复制标记之间的 token
+  - 装了 Python：运行 `refresh_buddy_token.py`，同样复制标记之间的 token
 - 飞书群机器人 webhook（可选，不填就只回写表格不推送）
 
 ## 配置步骤

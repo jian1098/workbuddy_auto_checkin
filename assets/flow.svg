@@ -33,7 +33,7 @@
   <!-- 1. 本机 -->
   <rect class="box" x="170" y="25" width="520" height="90" rx="10"/>
   <text class="fg"    x="190" y="58"  font-size="15" font-weight="600">本机 · 一次性</text>
-  <text class="muted" x="190" y="84"  font-size="12.5">refresh_token.py：读登录态 → 本地解密 → 导出 token</text>
+  <text class="muted" x="190" y="84"  font-size="12.5">refresh_buddy_token.py：读登录态 → 本地解密 → 导出 token</text>
 
   <!-- 2. Secret -->
   <rect class="box" x="170" y="165" width="520" height="90" rx="10"/>

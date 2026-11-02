@@ -1,4 +1,4 @@
-name: Buddy 加油站每日自动化
+name: WorkBuddy&Trae每日签到自动化
 
 on:
   schedule:
@@ -45,10 +45,13 @@ jobs:
           "$PY" -c 'import sys; print("使用解释器:", sys.executable, sys.version.split()[0])'
           echo "python_path=$PY" >> "$GITHUB_OUTPUT"
 
-      - name: 执行签到与派猫猫
+      - name: 执行 WorkBuddy 签到、派猫猫与 Trae 签到
         id: run
         env:
           WB_ACCESS_TOKEN: ${{ secrets.WB_ACCESS_TOKEN }}
+          TRAE_REFRESH_TOKEN: ${{ secrets.TRAE_REFRESH_TOKEN }}
+          TRAE_DEVICE_ID: ${{ secrets.TRAE_DEVICE_ID }}
+          TRAE_USER_ID: ${{ secrets.TRAE_USER_ID }}
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           WB_ENDPOINT: https://copilot.tencent.com
           WB_RESULT_FILE: ${{ runner.temp }}/wb_result.json
@@ -60,7 +63,7 @@ jobs:
           code=$?
           set -e
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          # 签到成功即成功：脚本自身已把猫猫失败与签到结论解耦，
+          # 已配置的签到全部成功即成功：脚本自身已把猫猫失败与签到结论解耦，
           # 这里统一以 0 退出，仅用 warning 提示存在未完成项。
           if [ "$code" -ne 0 ]; then
             echo "::warning::本轮存在未完成项，详见上方日志与飞书卡片"
@@ -74,7 +77,7 @@ jobs:
         run: |
           set -uo pipefail
           {
-            echo "### Buddy 加油站每日自动化"
+            echo "### WorkBuddy&Trae每日签到自动化"
             echo ""
             echo "- 运行时间：$(date -u '+%Y-%m-%d %H:%M:%S UTC')（cron 为 UTC）"
           } >> "$GITHUB_STEP_SUMMARY"

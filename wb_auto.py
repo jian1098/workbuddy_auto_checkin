@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""wb_auto.py —— 云端 runner 执行的每日自动化：签到 + 派猫猫旅行，结果推飞书。
+"""wb_auto.py —— 云端 runner 执行的每日自动化：WorkBuddy 签到 + 派猫猫旅行 + Trae 签到，结果推飞书。
 
 设计要点：
-  1. 一次运行把签到与派猫都做掉；
+  1. 一次运行把 WorkBuddy 签到、派猫、Trae 签到都做掉；
   2. 先领已到家的旅行积分，再判断能否派新一趟；今日名额已用则不派；
-  3. 签到与猫猫状态分开汇报；
-  4. 猫猫失败不污染签到结论 —— 签到成功即整体成功。
+  3. 各项状态分开汇报；
+  4. 猫猫失败不污染签到结论 —— 已配置的签到全部成功即整体成功；
+  5. WorkBuddy / Trae 各自可选，未配置凭证的一项直接跳过。
 
-凭证来自 GitHub Secret（由本机 refresh_token.py 注入），只读环境变量，不落盘、不打日志。
+凭证来自 GitHub Secret（由本机 refresh_buddy_token.py / refresh_trae_token.py 注入），只读环境变量，不落盘、不打日志。
 """
 
 import json
@@ -134,7 +135,7 @@ def run_checkin(headers, endpoint):
     if scode == CODE_NO_NETWORK:
         return False, {"result": "NETWORK", "report": "网络不可达，签到未完成"}
     if scode in (401, 403):
-        return False, {"result": "AUTH", "report": "认证被拒（HTTP %s），请重新运行 refresh_token.py 注入新 token" % scode}
+        return False, {"result": "AUTH", "report": "认证被拒（HTTP %s），请重新运行 refresh_buddy_token.py 注入新 token" % scode}
     if not (200 <= scode < 300):
         return False, {"result": "ERROR", "report": "状态接口异常（HTTP %s）" % scode}
 
@@ -292,9 +293,146 @@ def run_buddy(headers, endpoint):
         return {"result": "ERROR", "report": "猫猫模块异常（%s: %s）" % (type(e).__name__, e), "notes": notes}
 
 
+# ---------------------------------------------------------------- Trae
+
+TRAE_API = "https://api.trae.cn"
+TRAE_AUTH = "https://api.trae.com.cn"
+TRAE_CLIENT_ID = "en1oxy7wnw8j9n"
+TRAE_UA = "Trae/0.1.43"
+TRAE_CODE_AUTH_FAIL = 1001
+TRAE_CODE_RATE_LIMIT = 9074
+
+
+def _trae_data(body):
+    """Trae 接口有的字段平铺，有的包在 data / Result 里，统一取业务字段。"""
+    if not isinstance(body, dict):
+        return {}
+    for k in ("data", "Result"):
+        if isinstance(body.get(k), dict):
+            return body[k]
+    return body
+
+
+def _trae_auth_failed(code, body):
+    return code in (401, 403) or (isinstance(body, dict) and body.get("code") == TRAE_CODE_AUTH_FAIL)
+
+
+def trae_exchange_token(refresh_token, user_id):
+    """refreshToken 换 accessToken。返回 (access_token, bound_device_id, new_refresh_token, 失败原因)。"""
+    code, body = post(TRAE_AUTH + "/cloudide/api/v3/trae/oauth/ExchangeToken",
+                      {"Content-Type": "application/json", "User-Agent": TRAE_UA},
+                      {"ClientID": TRAE_CLIENT_ID, "RefreshToken": refresh_token,
+                       "ClientSecret": "-", "UserID": user_id or ""})
+    log("  [Trae-换token] HTTP %s %s" % (code, json.dumps(masked(body), ensure_ascii=False)))
+    if code == CODE_NO_NETWORK:
+        return None, None, None, "网络不可达"
+    result = _trae_data(body)
+    access = result.get("Token") or result.get("AccessToken")
+    if access:
+        return access, result.get("BoundDeviceID"), result.get("RefreshToken"), ""
+    err = dig(body, "ResponseMetadata", "Error", "Code")
+    if err:
+        return None, None, None, "refreshToken 被拒（%s）" % err
+    return None, None, None, "换 token 失败（HTTP %s）" % code
+
+
+def _trae_credits(headers):
+    """查当前积分（尽力而为，失败返回空串）：从权益包列表汇总 credits_limit。"""
+    try:
+        code, body = post(TRAE_API + "/trae/api/v2/pay/ide_user_ent_usage", headers, {})
+        if not (200 <= code < 300) or not isinstance(body, dict):
+            return ""
+        total = 0
+        for pk in body.get("user_entitlement_pack_list") or []:
+            quota = dig(pk, "entitlement_base_info", "quota") or pk.get("quota") or {}
+            total += as_int(quota.get("credits_limit"))
+        return "，当前积分 %s" % total if total else ""
+    except Exception:
+        return ""
+
+
+def _trae_claim_already(body):
+    text = json.dumps(body, ensure_ascii=False) if isinstance(body, dict) else str(body)
+    return any(kw in text for kw in ("已签到", "已领取", "明日再来", "already", "claimed"))
+
+
+def run_trae(refresh_token, device_id, user_id):
+    """refreshToken 换 token → 查状态 → 未领才领。返回 (ok, 汇报 dict)。"""
+    access, bound_device, new_refresh, reason = trae_exchange_token(refresh_token, user_id)
+    if not access:
+        if reason == "网络不可达":
+            return False, {"result": "NETWORK", "report": "网络不可达，Trae 签到未完成"}
+        return False, {"result": "AUTH",
+                       "report": "%s，请本机重跑 refresh_trae_token.py 更新 Secret TRAE_REFRESH_TOKEN" % reason}
+    if new_refresh and new_refresh != refresh_token:
+        log("  [Trae] 服务端下发了新的 refreshToken；若之后报 refreshToken 被拒，请本机重跑 refresh_trae_token.py")
+
+    # 签到按设备去重，必须用客户端真实设备号；未配置时退回服务端绑定的设备号
+    device_id = device_id or bound_device
+    if not device_id:
+        return False, {"result": "ERROR", "report": "缺少设备号，请配置 Secret TRAE_DEVICE_ID"}
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Cloud-IDE-JWT %s" % access,
+        "x-device-id": device_id,
+        "X-User-Region": "CN",
+        "User-Agent": TRAE_UA,
+    }
+    status_url = TRAE_API + "/trae/api/v2/ug/checkin_credits/status"
+
+    scode, sbody = post(status_url, headers, {})
+    log("  [Trae-状态] HTTP %s %s" % (scode, json.dumps(masked(sbody), ensure_ascii=False)))
+    if scode == CODE_NO_NETWORK:
+        return False, {"result": "NETWORK", "report": "网络不可达，Trae 签到未完成"}
+    if _trae_auth_failed(scode, sbody):
+        return False, {"result": "AUTH", "report": "Trae 认证被拒（HTTP %s）" % scode}
+    if not (200 <= scode < 300):
+        return False, {"result": "ERROR", "report": "Trae 状态接口异常（HTTP %s）" % scode}
+
+    status = _trae_data(sbody)
+    if status.get("checked_in"):
+        cr = status.get("credits")
+        return True, {"result": "ALREADY",
+                      "report": "今日已领取%s%s" % ("（+%s）" % cr if cr else "", _trae_credits(headers))}
+
+    # 服务端高峰期会限流返回 9074，退避重试；重试前再查一次状态，已领则收手
+    ccode, cbody = None, None
+    for attempt in range(1, MAX_RETRY + 1):
+        if attempt > 1:
+            _, again = post(status_url, headers, {})
+            if _trae_data(again).get("checked_in"):
+                return True, {"result": "ALREADY", "report": "今日已领取%s" % _trae_credits(headers)}
+        ccode, cbody = post(TRAE_API + "/trae/api/v2/ug/checkin_credits/claim", headers, {})
+        log("  [Trae-领取] HTTP %s %s" % (ccode, json.dumps(masked(cbody), ensure_ascii=False)))
+        if isinstance(cbody, dict) and cbody.get("code") == TRAE_CODE_RATE_LIMIT and attempt < MAX_RETRY:
+            wait = 20 * attempt
+            log("  [Trae] 服务端限流（9074），%ds 后重试（%d/%d）" % (wait, attempt, MAX_RETRY))
+            time.sleep(wait)
+            continue
+        break
+
+    if ccode == CODE_NO_NETWORK:
+        return False, {"result": "NETWORK", "report": "领取请求未送达，Trae 签到未完成"}
+    if _trae_auth_failed(ccode, cbody):
+        return False, {"result": "AUTH", "report": "Trae 认证被拒（HTTP %s）" % ccode}
+
+    bcode = cbody.get("code") if isinstance(cbody, dict) else None
+    msg = (cbody.get("message") or cbody.get("msg") or "") if isinstance(cbody, dict) else ""
+    if 200 <= ccode < 300 and (bcode in (0, 200) or dig(cbody, "success") or _trae_data(cbody).get("success")):
+        return True, {"result": "CLAIMED", "report": "领取成功%s" % _trae_credits(headers)}
+    if bcode == TRAE_CODE_RATE_LIMIT:
+        return False, {"result": "RATE_LIMIT",
+                       "report": "服务端限流，重试 %d 次仍未领到（%s）" % (MAX_RETRY, msg or "9074")}
+    if _trae_claim_already(cbody):
+        return True, {"result": "ALREADY", "report": "今日已领取%s" % _trae_credits(headers)}
+    return False, {"result": "ERROR",
+                   "report": "领取失败：code=%s %s（HTTP %s）" % (bcode, msg, ccode)}
+
+
 # ---------------------------------------------------------------- 飞书
 
-def push_feishu(webhook, title, checkin_line, buddy_line, overall_ok):
+def push_feishu(webhook, sections, overall_ok):
     """推送到飞书自定义机器人。返回 (ok, reason)。
 
     重试策略与业务请求、WPS 版保持一致：
@@ -304,15 +442,11 @@ def push_feishu(webhook, title, checkin_line, buddy_line, overall_ok):
     兜底：脚本幂等，当天 cron 有多个时段时，下一次运行会自动再推一遍当天结果。
     """
     color = "green" if overall_ok else "red"
-    lines = [
-        "**%s**" % title,
-        "",
-        "**签到**",
-        checkin_line,
-        "",
-        "**猫猫旅行**",
-        buddy_line,
-    ]
+    lines = []
+    for name, line in sections:
+        if lines:
+            lines.append("")
+        lines += ["**%s**" % name, line]
     payload = {
         "msg_type": "interactive",
         "card": {
@@ -320,7 +454,7 @@ def push_feishu(webhook, title, checkin_line, buddy_line, overall_ok):
             "header": {
                 "template": color,
                 "title": {"tag": "plain_text",
-                          "content": "Buddy 加油站 · %s" % ("成功" if overall_ok else "部分失败")},
+                          "content": "WorkBuddy & Trae 每日签到 · %s" % ("成功" if overall_ok else "部分失败")},
             },
             "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
         },
@@ -361,47 +495,71 @@ def push_feishu(webhook, title, checkin_line, buddy_line, overall_ok):
 
 def main():
     token = os.environ.get("WB_ACCESS_TOKEN")
+    trae_refresh = os.environ.get("TRAE_REFRESH_TOKEN")
     webhook = os.environ.get("FEISHU_WEBHOOK")
     endpoint = os.environ.get("WB_ENDPOINT") or DEFAULT_ENDPOINT
 
-    if not token:
-        log("缺少环境变量 WB_ACCESS_TOKEN（请在本机运行 refresh_token.py 注入 GitHub Secret）")
+    if not token and not trae_refresh:
+        log("缺少环境变量：WB_ACCESS_TOKEN 与 TRAE_REFRESH_TOKEN 至少配置一个")
         return 2
     if not webhook:
         log("缺少环境变量 FEISHU_WEBHOOK")
 
-    headers = {
-        "Accept": "application/json",
-        "Authorization": "Bearer %s" % token,
-        "Content-Type": "application/json",
-        "User-Agent": "WorkBuddy",
-    }
+    log("=== 1/3 WorkBuddy 签到 ===")
+    if token:
+        headers = {
+            "Accept": "application/json",
+            "Authorization": "Bearer %s" % token,
+            "Content-Type": "application/json",
+            "User-Agent": "WorkBuddy",
+        }
+        checkin_ok, checkin = run_checkin(headers, endpoint)
+        log("  结论：%s" % checkin["report"])
 
-    log("=== 1/2 签到 ===")
-    checkin_ok, checkin = run_checkin(headers, endpoint)
-    log("  结论：%s" % checkin["report"])
-
-    # 猫猫独立 try：任何异常都不影响签到结论
-    log("=== 2/2 猫猫旅行 ===")
-    try:
-        buddy = run_buddy(headers, endpoint)
-    except Exception as e:
-        buddy = {"result": "ERROR", "report": "猫猫模块异常（%s: %s）" % (type(e).__name__, e)}
+        # 猫猫独立 try：任何异常都不影响签到结论
+        log("=== 2/3 WorkBuddy 猫猫旅行 ===")
+        try:
+            buddy = run_buddy(headers, endpoint)
+        except Exception as e:
+            buddy = {"result": "ERROR", "report": "猫猫模块异常（%s: %s）" % (type(e).__name__, e)}
+    else:
+        skipped = "未配置 WB_ACCESS_TOKEN，跳过"
+        checkin_ok, checkin = None, {"result": "SKIPPED", "report": skipped}
+        log("  结论：%s" % skipped)
+        log("=== 2/3 WorkBuddy 猫猫旅行 ===")
+        buddy = {"result": "SKIPPED", "report": skipped}
     log("  结论：%s" % buddy.get("report", ""))
 
-    # 整体成败只看签到：签到成功即成功
-    overall_ok = checkin_ok
-    checkin_line = ("✅ " if checkin_ok else "❌ ") + checkin["report"]
+    log("=== 3/3 Trae 签到 ===")
+    if trae_refresh:
+        try:
+            trae_ok, trae = run_trae(trae_refresh, os.environ.get("TRAE_DEVICE_ID"),
+                                     os.environ.get("TRAE_USER_ID"))
+        except Exception as e:
+            trae_ok, trae = False, {"result": "ERROR",
+                                    "report": "Trae 模块异常（%s: %s）" % (type(e).__name__, e)}
+    else:
+        trae_ok, trae = None, {"result": "SKIPPED", "report": "未配置 TRAE_REFRESH_TOKEN，跳过"}
+    log("  结论：%s" % trae["report"])
+
+    # 整体成败看已配置的签到项（None = 未配置跳过）；猫猫不计入
+    overall_ok = checkin_ok is not False and trae_ok is not False
+    mark = {True: "✅ ", False: "❌ ", None: "⏭️ "}
+    checkin_line = mark[checkin_ok] + checkin["report"]
     buddy_line = ("🐱 " + buddy.get("report", "")) if buddy.get("report") else "🐱 无结论"
+    trae_line = mark[trae_ok] + trae["report"]
 
     # 推送状态与业务结论分开呈现：失败原因可诊断，但不污染签到结论
     push_ok, push_reason = None, "未配置（缺少 FEISHU_WEBHOOK，本次不推送）"
     if webhook:
-        push_ok, push_reason = push_feishu(webhook, "每日自动化", checkin_line, buddy_line, overall_ok)
+        push_ok, push_reason = push_feishu(webhook, [("WorkBuddy 签到", checkin_line),
+                                                     ("WorkBuddy 猫猫旅行", buddy_line),
+                                                     ("Trae 签到", trae_line)], overall_ok)
 
     result = {
         "checkin": {"ok": checkin_ok, **checkin},
         "buddy": {k: v for k, v in buddy.items() if k != "notes"},
+        "trae": {"ok": trae_ok, **trae},
         "push": {"ok": push_ok, "reason": push_reason},
         "overall_ok": overall_ok,
     }
@@ -415,10 +573,12 @@ def main():
                          else "❌ 推送失败：%s" % push_reason)
             with open(result_file, "w", encoding="utf-8") as f:
                 f.write("| 项目 | 结论 |\n| --- | --- |\n")
-                f.write("| 签到 | %s |\n" % checkin_line)
-                f.write("| 猫猫旅行 | %s |\n" % buddy_line)
+                f.write("| WorkBuddy 签到 | %s |\n" % checkin_line)
+                f.write("| WorkBuddy 猫猫旅行 | %s |\n" % buddy_line)
+                f.write("| Trae 签到 | %s |\n" % trae_line)
                 f.write("| 飞书推送 | %s |\n" % push_line)
-                f.write("| 整体 | %s |\n" % ("成功（签到已达成）" if overall_ok else "失败（签到未达成）"))
+                f.write("| 整体 | %s |\n" % ("成功（已配置的签到均已达成）" if overall_ok
+                                            else "失败（有签到未达成）"))
         except OSError as e:
             log("结果文件写入失败：%s" % e)
 
