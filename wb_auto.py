@@ -170,8 +170,9 @@ def run_checkin(headers, endpoint):
         tail = ""
         if streak is not None:
             tail = "（连续 %s 天%s）" % (streak, "，累计 %s 积分" % cum if cum is not None else "")
+        balance = _wb_balance(s)
         return True, {"result": "CLAIMED", "credit": credit,
-                      "report": "成功领取 %s 积分%s%s" % (credit, bonus, tail)}
+                      "report": "成功领取 %s 积分%s%s%s" % (credit, bonus, tail, balance)}
 
     if isinstance(cbody, dict) and ("code" in cbody or "msg" in cbody):
         return False, {"result": "ERROR",
@@ -202,6 +203,12 @@ def _fmt_eta(arrive_at, server_now):
     return "，约 %.1f 小时后到家" % (left / 3600)
 
 
+def _wb_balance(status):
+    """从 status 对象中提取余额信息。"""
+    balance = dig(status, "balance") or dig(status, "available_credits") or dig(status, "credits")
+    return "，当前余额 %s 积分" % balance if balance is not None else ""
+
+
 def _fmt_already(status, via="今日已签过"):
     parts = []
     if dig(status, "today_credit") is not None:
@@ -210,7 +217,8 @@ def _fmt_already(status, via="今日已签过"):
         parts.append("连续 %s 天" % dig(status, "streak_days"))
     if dig(status, "total_credits") is not None:
         parts.append("累计 %s 积分" % dig(status, "total_credits"))
-    return "%s（%s）" % (via, "，".join(parts)) if parts else via
+    balance = _wb_balance(status)
+    return "%s（%s）%s" % (via, "，".join(parts), balance) if parts else via
 
 
 # ---------------------------------------------------------------- 猫猫
