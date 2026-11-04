@@ -4,7 +4,7 @@
 
 导出三项：
   TRAE_REFRESH_TOKEN  OAuth 回调拿到的 refreshToken（换过一次 token 后取服务端下发的最新值）
-  TRAE_DEVICE_ID      签到设备号：优先本机 Trae 客户端的 16 位 Aha 数字号，取不到再退回
+  TRAE_DEVICE_ID      签到设备号：优先本机 Trae 客户端的 Aha 纯数字设备号（12~20 位），取不到再退回
   TRAE_USER_ID        Trae 用户 ID
 
 用法：
@@ -47,7 +47,7 @@ LOGIN_TIMEOUT = 300
 TRAE_AUTH = "https://api.trae.com.cn"
 TRAE_CLIENT_ID = "en1oxy7wnw8j9n"
 TRAE_UA = "Trae/0.1.43"
-AHA_DEVICE_RE = re.compile(r"iCubeAuthInfo://icube-dc:(\d{16})(?!\d)")
+AHA_DEVICE_RE = re.compile(r"iCubeAuthInfo://icube-dc:(\d{12,20})(?!\d)")
 TRAE_CLIENT_DIRS = ("TRAE SOLO CN", "Trae CN", "Trae")
 
 DEBUG = False
@@ -202,7 +202,7 @@ def exchange_token(refresh_token, user_id):
 # 设备号
 # ---------------------------------------------------------------------------
 def resolve_device_id(fallback):
-    """优先 Trae 客户端 storage.json 里的 16 位 Aha 数字号（签到会校验设备，
+    """优先 Trae 客户端 storage.json 里的 Aha 纯数字设备号（12~20 位，签到会校验设备，
     UUID / hex 设备号易被风控返回 9074）；其次旧版 machineid；最后服务端 BoundDeviceID。
     返回 (设备号, 来源说明)。"""
     roaming = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
@@ -214,7 +214,7 @@ def resolve_device_id(fallback):
         except OSError:
             continue
         if m:
-            return m.group(1), "本机客户端 %s（16 位 Aha 设备号）" % name
+            return m.group(1), "本机客户端 %s（Aha 设备号）" % name
     for name in TRAE_CLIENT_DIRS:
         path = os.path.join(roaming, name, "machineid")
         try:
