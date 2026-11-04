@@ -497,6 +497,26 @@ def _qoder_amount(campaign):
     return amount if isinstance(amount, (int, float)) else None
 
 
+def _qoder_balance(headers, base_url):
+    """查当前 Credits 余额（尽力而为，失败返回空串）：套餐与加量的 remaining 求和。"""
+    try:
+        code, body = get(base_url + "/sash/api/v2/me/usage", headers)
+        if not (200 <= code < 300) or not isinstance(body, dict):
+            return ""
+        usage = body.get("qoderUsage")
+        if not isinstance(usage, dict):
+            return ""
+        remaining, has = 0, False
+        for key in ("userQuota", "addOnQuota"):
+            quota = usage.get(key)
+            if isinstance(quota, dict) and isinstance(quota.get("remaining"), (int, float)):
+                remaining += quota["remaining"]
+                has = True
+        return "，当前余额 %s Credits" % remaining if has else ""
+    except Exception:
+        return ""
+
+
 def run_qoder(token, base_url):
     """查活动 → 只领 CLAIMABLE 的（服务端幂等，重复领返回 CLAIMED）。返回 (ok, 汇报 dict)。"""
     headers = _qoder_headers(token)
@@ -553,18 +573,22 @@ def run_qoder(token, base_url):
         report = "成功领取 %s Credits" % ("" if total is None else total)
         if keys:
             report += "（%s）" % "、".join(keys)
-        return True, {"result": "CLAIMED", "credits": total, "report": report + validity}
+        return True, {"result": "CLAIMED", "credits": total,
+                      "report": report + validity + _qoder_balance(headers, base_url)}
 
     if claimed:
         amounts = [_qoder_amount(c) for c in claimed if _qoder_amount(c) is not None]
         report = "本周期已领取%s（%s）" % (
             " %s Credits" % sum(amounts) if amounts else "",
             "、".join(_qoder_key(c) for c in claimed))
-        return True, {"result": "ALREADY", "report": report}
+        return True, {"result": "ALREADY", "report": report + _qoder_balance(headers, base_url)}
     if active:
         rows = "；".join("%s status=%s" % (_qoder_key(c), c.get("claimStatus") or "?") for c in active)
-        return False, {"result": "PENDING", "report": "活动存在但当前不可领取：%s" % rows}
-    return True, {"result": "INACTIVE", "report": "当前没有可领取的 Credits 活动（活动可能已结束）"}
+        return False, {"result": "PENDING",
+                       "report": "活动存在但当前不可领取：%s%s" % (rows, _qoder_balance(headers, base_url))}
+    return True, {"result": "INACTIVE",
+                  "report": "当前没有可领取的 Credits 活动（活动可能已结束）%s"
+                            % _qoder_balance(headers, base_url)}
 
 
 # ---------------------------------------------------------------- 飞书

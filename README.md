@@ -294,6 +294,7 @@ Qoder CN（协议细节参考 [auto-signin-kit](https://github.com/hiclaw168-163
 ```text
 GET  openapi.qoder.com.cn/sash/api/v1/me/campaigns            查询活动列表
 POST openapi.qoder.com.cn/sash/api/v1/me/campaigns/{id}/claim 领取 Credits（空请求体，重复领取幂等返回 CLAIMED）
+GET  openapi.qoder.com.cn/sash/api/v2/me/usage                查询 Credits 余额（套餐 + 加量 remaining，尽力而为）
 ```
 
 鉴权头 `Authorization: Bearer <token>`，且必须带 `Cosy-ClientType: 10`——缺这个头服务端返回空的活动列表。
