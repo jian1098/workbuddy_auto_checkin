@@ -28,7 +28,7 @@ MAX_RETRY = 3
 CODE_NO_NETWORK = -1
 
 # Trae 签到配置
-TRAE_UA = "Trae/1.107.1"
+TRAE_UA = "Trae/0.1.43"
 TRAE_REQ_SOURCE = 1
 
 
@@ -330,7 +330,7 @@ def _trae_auth_failed(code, body):
 
 
 def _trae_ug_headers(token, device_id):
-    """Trae UG 接口请求头：必须带完整设备头，否则会被服务端拒成 9074。"""
+    """Trae UG 接口请求头。"""
     headers = {
         "Authorization": "Cloud-IDE-JWT %s" % token,
         "X-User-Region": "CN",
@@ -339,9 +339,6 @@ def _trae_ug_headers(token, device_id):
     }
     if device_id:
         headers["x-device-id"] = device_id
-    headers["x-device-type"] = platform.system() or "Windows"
-    headers["x-os-version"] = platform.version() or "10.0.19045"
-    headers["x-app-version"] = "1.107.1"
     return headers
 
 
