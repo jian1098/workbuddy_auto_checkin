@@ -14,6 +14,7 @@
 
 import json
 import os
+import platform
 import ssl
 import sys
 import time
@@ -25,6 +26,11 @@ REQUEST_TIMEOUT = 20
 MAX_RETRY = 3
 
 CODE_NO_NETWORK = -1
+
+# Trae 强制直连，不走系统代理（避免触发 9074 限流）
+_TRAE_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+TRAE_UA = "Trae/1.107.1"
+TRAE_REQ_SOURCE = 1
 
 
 def log(msg):
@@ -112,6 +118,31 @@ def get(url, headers):
 
 def post(url, headers, payload=None):
     return request(url, headers, method="POST", payload=payload)
+
+
+def trae_post(url, headers, payload=None, timeout=20):
+    """Trae 专用 POST：强制直连不走代理，避免触发 9074 限流。"""
+    body = None
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    ctx = ssl.create_default_context()
+    try:
+        with _TRAE_OPENER.open(req, timeout=timeout, context=ctx) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            try:
+                return resp.status, json.loads(raw)
+            except ValueError:
+                return resp.status, {"raw": raw[:300]}
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace")
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = {"raw": raw[:300]}
+        return e.code, body
+    except Exception as e:
+        return CODE_NO_NETWORK, {"error": "%s: %s" % (type(e).__name__, e)}
 
 
 def api_ok(code, body):
@@ -306,7 +337,6 @@ def run_buddy(headers, endpoint):
 TRAE_API = "https://api.trae.cn"
 TRAE_AUTH = "https://api.trae.com.cn"
 TRAE_CLIENT_ID = "en1oxy7wnw8j9n"
-TRAE_UA = "Trae/0.1.43"
 TRAE_CODE_AUTH_FAIL = 1001
 TRAE_CODE_RATE_LIMIT = 9074
 
@@ -323,6 +353,22 @@ def _trae_data(body):
 
 def _trae_auth_failed(code, body):
     return code in (401, 403) or (isinstance(body, dict) and body.get("code") == TRAE_CODE_AUTH_FAIL)
+
+
+def _trae_ug_headers(token, device_id):
+    """Trae UG 接口请求头：必须带完整设备头，否则会被服务端拒成 9074。"""
+    headers = {
+        "Authorization": "Cloud-IDE-JWT %s" % token,
+        "X-User-Region": "CN",
+        "User-Agent": TRAE_UA,
+        "Content-Type": "application/json",
+    }
+    if device_id:
+        headers["x-device-id"] = device_id
+    headers["x-device-type"] = platform.system() or "Windows"
+    headers["x-os-version"] = platform.version() or "10.0.19045"
+    headers["x-app-version"] = "1.107.1"
+    return headers
 
 
 def trae_exchange_token(refresh_token, user_id):
@@ -347,7 +393,7 @@ def trae_exchange_token(refresh_token, user_id):
 def _trae_credits(headers):
     """查当前积分（尽力而为，失败返回空串）：从权益包列表汇总 credits_limit。"""
     try:
-        code, body = post(TRAE_API + "/trae/api/v2/pay/ide_user_ent_usage", headers, {})
+        code, body = trae_post(TRAE_API + "/trae/api/v2/pay/ide_user_ent_usage", headers, {})
         if not (200 <= code < 300) or not isinstance(body, dict):
             return ""
         total = 0
@@ -380,16 +426,10 @@ def run_trae(refresh_token, device_id, user_id):
     if not device_id:
         return False, {"result": "ERROR", "report": "缺少设备号，请配置 Secret TRAE_DEVICE_ID"}
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": "Cloud-IDE-JWT %s" % access,
-        "x-device-id": device_id,
-        "X-User-Region": "CN",
-        "User-Agent": TRAE_UA,
-    }
+    headers = _trae_ug_headers(access, device_id)
     status_url = TRAE_API + "/trae/api/v2/ug/checkin_credits/status"
 
-    scode, sbody = post(status_url, headers, {})
+    scode, sbody = trae_post(status_url, headers, {})
     log("  [Trae-状态] HTTP %s %s" % (scode, json.dumps(masked(sbody), ensure_ascii=False)))
     if scode == CODE_NO_NETWORK:
         return False, {"result": "NETWORK", "report": "网络不可达，Trae 签到未完成"}
@@ -405,13 +445,15 @@ def run_trae(refresh_token, device_id, user_id):
                       "report": "今日已领取%s%s" % ("（+%s）" % cr if cr else "", _trae_credits(headers))}
 
     # 服务端高峰期会限流返回 9074，退避重试；重试前再查一次状态，已领则收手
+    # 请求体必须带 req_source，否则会被服务端拒成 9074
+    claim_body = {"req_source": TRAE_REQ_SOURCE}
     ccode, cbody = None, None
     for attempt in range(1, MAX_RETRY + 1):
         if attempt > 1:
-            _, again = post(status_url, headers, {})
+            _, again = trae_post(status_url, headers, {})
             if _trae_data(again).get("checked_in"):
                 return True, {"result": "ALREADY", "report": "今日已领取%s" % _trae_credits(headers)}
-        ccode, cbody = post(TRAE_API + "/trae/api/v2/ug/checkin_credits/claim", headers, {})
+        ccode, cbody = trae_post(TRAE_API + "/trae/api/v2/ug/checkin_credits/claim", headers, claim_body)
         log("  [Trae-领取] HTTP %s %s" % (ccode, json.dumps(masked(cbody), ensure_ascii=False)))
         if isinstance(cbody, dict) and cbody.get("code") == TRAE_CODE_RATE_LIMIT and attempt < MAX_RETRY:
             wait = 20 * attempt
