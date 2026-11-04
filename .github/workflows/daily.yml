@@ -1,4 +1,4 @@
-name: WorkBuddy&Trae每日签到自动化
+name: WorkBuddy&Trae&Qoder每日签到自动化
 
 on:
   schedule:
@@ -46,13 +46,15 @@ jobs:
           "$PY" -c 'import sys; print("使用解释器:", sys.executable, sys.version.split()[0])'
           echo "python_path=$PY" >> "$GITHUB_OUTPUT"
 
-      - name: 执行 WorkBuddy 签到、派猫猫与 Trae 签到
+      - name: 执行 WorkBuddy 签到、派猫猫、Trae 与 Qoder 签到
         id: run
         env:
           WB_ACCESS_TOKEN: ${{ secrets.WB_ACCESS_TOKEN }}
           TRAE_REFRESH_TOKEN: ${{ secrets.TRAE_REFRESH_TOKEN }}
           TRAE_DEVICE_ID: ${{ secrets.TRAE_DEVICE_ID }}
           TRAE_USER_ID: ${{ secrets.TRAE_USER_ID }}
+          QODER_TOKEN: ${{ secrets.QODER_TOKEN }}
+          QODER_BASE_URL: ${{ secrets.QODER_BASE_URL }}
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           WB_ENDPOINT: https://copilot.tencent.com
           WB_RESULT_FILE: ${{ runner.temp }}/wb_result.json
@@ -78,7 +80,7 @@ jobs:
         run: |
           set -uo pipefail
           {
-            echo "### WorkBuddy&Trae每日签到自动化"
+            echo "### WorkBuddy&Trae&Qoder每日签到自动化"
             echo ""
             echo "- 运行时间：$(date -u '+%Y-%m-%d %H:%M:%S UTC')（cron 为 UTC）"
           } >> "$GITHUB_STEP_SUMMARY"

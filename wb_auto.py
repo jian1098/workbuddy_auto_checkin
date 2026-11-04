@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""wb_auto.py —— 云端 runner 执行的每日自动化：WorkBuddy 签到 + 派猫猫旅行 + Trae 签到，结果推飞书。
+"""wb_auto.py —— 云端 runner 执行的每日自动化：WorkBuddy 签到 + 派猫猫旅行 + Trae 签到 + Qoder CN 领取 Credits，结果推飞书。
 
 设计要点：
-  1. 一次运行把 WorkBuddy 签到、派猫、Trae 签到都做掉；
+  1. 一次运行把 WorkBuddy 签到、派猫、Trae 签到、Qoder 领取都做掉；
   2. 先领已到家的旅行积分，再判断能否派新一趟；今日名额已用则不派；
   3. 各项状态分开汇报；
   4. 猫猫失败不污染签到结论 —— 已配置的签到全部成功即整体成功；
-  5. WorkBuddy / Trae 各自可选，未配置凭证的一项直接跳过。
+  5. WorkBuddy / Trae / Qoder 各自可选，未配置凭证的一项直接跳过。
 
-凭证来自 GitHub Secret（由本机 refresh_buddy_token.py / refresh_trae_token.py 注入），只读环境变量，不落盘、不打日志。
+凭证来自 GitHub Secret（由本机 refresh_buddy_token.py / refresh_trae_token.py / refresh_qoder_token.py 注入），只读环境变量，不落盘、不打日志。
 """
 
 import json
@@ -451,6 +451,122 @@ def run_trae(refresh_token, device_id, user_id):
                    "report": "领取失败：code=%s %s（HTTP %s）" % (bcode, msg, ccode)}
 
 
+# ---------------------------------------------------------------- Qoder CN
+# 协议细节参考 auto-signin-kit（MIT，github.com/hiclaw168-163/auto-signin-kit）的 qoder 域实现。
+
+QODER_API = "https://openapi.qoder.com.cn"
+
+
+def _qoder_headers(token):
+    return {
+        "Accept": "application/json",
+        "User-Agent": "Qoder/claim",
+        "Cosy-ClientType": "10",  # 缺这个头，服务端返回空的活动列表
+        "Authorization": "Bearer %s" % token,
+    }
+
+
+def _qoder_ts(value):
+    """秒/毫秒时间戳统一成秒；非数字返回 None。"""
+    if isinstance(value, (int, float)):
+        return value / 1000.0 if value > 10**12 else value
+    return None
+
+
+def _qoder_active(campaign, now):
+    """活动窗口是否包含 now；缺字段视为生效。"""
+    start = _qoder_ts(campaign.get("startAt"))
+    end = _qoder_ts(campaign.get("endAt"))
+    if start is not None and now < start:
+        return False
+    return not (end is not None and now >= end)
+
+
+def _qoder_campaigns(payload):
+    rows = payload.get("campaigns") if isinstance(payload, dict) else None
+    return [c for c in rows if isinstance(c, dict)] if isinstance(rows, list) else []
+
+
+def _qoder_key(campaign):
+    return str(campaign.get("campaignKey") or campaign.get("campaignId") or "?")
+
+
+def _qoder_amount(campaign):
+    benefit = campaign.get("benefit")
+    amount = benefit.get("amount") if isinstance(benefit, dict) else None
+    return amount if isinstance(amount, (int, float)) else None
+
+
+def run_qoder(token, base_url):
+    """查活动 → 只领 CLAIMABLE 的（服务端幂等，重复领返回 CLAIMED）。返回 (ok, 汇报 dict)。"""
+    headers = _qoder_headers(token)
+    code, payload = get(base_url + "/sash/api/v1/me/campaigns", headers)
+    log("  [Qoder-活动] HTTP %s %s" % (code, json.dumps(masked(payload), ensure_ascii=False)))
+
+    if code == CODE_NO_NETWORK:
+        return False, {"result": "NETWORK", "report": "网络不可达，Qoder 领取未完成"}
+    if code in (401, 403):
+        return False, {"result": "AUTH",
+                       "report": "登录态被拒（HTTP %s），请本机重跑 refresh_qoder_token.py "
+                                 "更新 Secret QODER_TOKEN（令牌只对签发它的端点有效，"
+                                 "CN/国际版不匹配时需配 QODER_BASE_URL）" % code}
+    if not (200 <= code < 300) or not isinstance(payload, dict):
+        return False, {"result": "ERROR", "report": "查询活动失败（HTTP %s）" % code}
+
+    benefit = [c for c in _qoder_campaigns(payload) if c.get("actionType") == "CLAIM_BENEFIT"]
+    active = [c for c in benefit if _qoder_active(c, time.time())]
+    todo = [c for c in active if c.get("claimStatus") == "CLAIMABLE"]
+    claimed = [c for c in active if c.get("claimStatus") == "CLAIMED"]
+
+    if todo:
+        total, keys, failures = None, [], []
+        for campaign in todo:
+            key = _qoder_key(campaign)
+            # 领取接口没有请求体；写操作不做网络重试，靠服务端幂等（重复领返回 CLAIMED）
+            ccode, cbody = request(base_url + "/sash/api/v1/me/campaigns/%s/claim"
+                                   % campaign.get("campaignId"),
+                                   headers, method="POST", retry=False)
+            log("  [Qoder-领取] %s HTTP %s %s"
+                % (key, ccode, json.dumps(masked(cbody), ensure_ascii=False)))
+            if ccode in (401, 403):
+                return False, {"result": "AUTH",
+                               "report": "领取被拒（HTTP %s，%s），请本机重跑 refresh_qoder_token.py"
+                                         % (ccode, key)}
+            data = cbody.get("data") if isinstance(cbody, dict) and isinstance(cbody.get("data"), dict) else cbody
+            ok = ccode == 200 and isinstance(data, dict) and data.get("status") == "CLAIMED"
+            if not ok:
+                failures.append("%s: HTTP %s" % (key, ccode))
+                continue
+            amount = _qoder_amount(data)
+            if amount is None:
+                amount = _qoder_amount(campaign)
+            total = amount if total is None else (total + (amount or 0))
+            keys.append(key)
+        if failures:
+            return False, {"result": "ERROR",
+                           "report": "领取失败：%s" % "；".join(failures)}
+        validity = ""
+        benefit0 = todo[0].get("benefit")
+        v = benefit0.get("validity") if isinstance(benefit0, dict) else None
+        if isinstance(v, dict) and v.get("mode") == "RELATIVE_DAYS" and v.get("days"):
+            validity = "，领取后 %s 天有效" % v["days"]
+        report = "成功领取 %s Credits" % ("" if total is None else total)
+        if keys:
+            report += "（%s）" % "、".join(keys)
+        return True, {"result": "CLAIMED", "credits": total, "report": report + validity}
+
+    if claimed:
+        amounts = [_qoder_amount(c) for c in claimed if _qoder_amount(c) is not None]
+        report = "本周期已领取%s（%s）" % (
+            " %s Credits" % sum(amounts) if amounts else "",
+            "、".join(_qoder_key(c) for c in claimed))
+        return True, {"result": "ALREADY", "report": report}
+    if active:
+        rows = "；".join("%s status=%s" % (_qoder_key(c), c.get("claimStatus") or "?") for c in active)
+        return False, {"result": "PENDING", "report": "活动存在但当前不可领取：%s" % rows}
+    return True, {"result": "INACTIVE", "report": "当前没有可领取的 Credits 活动（活动可能已结束）"}
+
+
 # ---------------------------------------------------------------- 飞书
 
 def push_feishu(webhook, sections, overall_ok):
@@ -475,7 +591,7 @@ def push_feishu(webhook, sections, overall_ok):
             "header": {
                 "template": color,
                 "title": {"tag": "plain_text",
-                          "content": "WorkBuddy & Trae 每日签到 · %s" % ("成功" if overall_ok else "部分失败")},
+                          "content": "WorkBuddy & Trae & Qoder 每日签到 · %s" % ("成功" if overall_ok else "部分失败")},
             },
             "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
         },
@@ -517,16 +633,17 @@ def push_feishu(webhook, sections, overall_ok):
 def main():
     token = os.environ.get("WB_ACCESS_TOKEN")
     trae_refresh = os.environ.get("TRAE_REFRESH_TOKEN")
+    qoder_token = os.environ.get("QODER_TOKEN")
     webhook = os.environ.get("FEISHU_WEBHOOK")
     endpoint = os.environ.get("WB_ENDPOINT") or DEFAULT_ENDPOINT
 
-    if not token and not trae_refresh:
-        log("缺少环境变量：WB_ACCESS_TOKEN 与 TRAE_REFRESH_TOKEN 至少配置一个")
+    if not token and not trae_refresh and not qoder_token:
+        log("缺少环境变量：WB_ACCESS_TOKEN、TRAE_REFRESH_TOKEN 与 QODER_TOKEN 至少配置一个")
         return 2
     if not webhook:
         log("缺少环境变量 FEISHU_WEBHOOK")
 
-    log("=== 1/3 WorkBuddy 签到 ===")
+    log("=== 1/4 WorkBuddy 签到 ===")
     if token:
         headers = {
             "Accept": "application/json",
@@ -538,7 +655,7 @@ def main():
         log("  结论：%s" % checkin["report"])
 
         # 猫猫独立 try：任何异常都不影响签到结论
-        log("=== 2/3 WorkBuddy 猫猫旅行 ===")
+        log("=== 2/4 WorkBuddy 猫猫旅行 ===")
         try:
             buddy = run_buddy(headers, endpoint)
         except Exception as e:
@@ -547,11 +664,11 @@ def main():
         skipped = "未配置 WB_ACCESS_TOKEN，跳过"
         checkin_ok, checkin = None, {"result": "SKIPPED", "report": skipped}
         log("  结论：%s" % skipped)
-        log("=== 2/3 WorkBuddy 猫猫旅行 ===")
+        log("=== 2/4 WorkBuddy 猫猫旅行 ===")
         buddy = {"result": "SKIPPED", "report": skipped}
     log("  结论：%s" % buddy.get("report", ""))
 
-    log("=== 3/3 Trae 签到 ===")
+    log("=== 3/4 Trae 签到 ===")
     if trae_refresh:
         try:
             trae_ok, trae = run_trae(trae_refresh, os.environ.get("TRAE_DEVICE_ID"),
@@ -563,24 +680,39 @@ def main():
         trae_ok, trae = None, {"result": "SKIPPED", "report": "未配置 TRAE_REFRESH_TOKEN，跳过"}
     log("  结论：%s" % trae["report"])
 
+    log("=== 4/4 Qoder CN 领取 Credits ===")
+    if qoder_token:
+        try:
+            qoder_ok, qoder = run_qoder(qoder_token,
+                                        os.environ.get("QODER_BASE_URL") or QODER_API)
+        except Exception as e:
+            qoder_ok, qoder = False, {"result": "ERROR",
+                                      "report": "Qoder 模块异常（%s: %s）" % (type(e).__name__, e)}
+    else:
+        qoder_ok, qoder = None, {"result": "SKIPPED", "report": "未配置 QODER_TOKEN，跳过"}
+    log("  结论：%s" % qoder["report"])
+
     # 整体成败看已配置的签到项（None = 未配置跳过）；猫猫不计入
-    overall_ok = checkin_ok is not False and trae_ok is not False
+    overall_ok = checkin_ok is not False and trae_ok is not False and qoder_ok is not False
     mark = {True: "✅ ", False: "❌ ", None: "⏭️ "}
     checkin_line = mark[checkin_ok] + checkin["report"]
     buddy_line = ("🐱 " + buddy.get("report", "")) if buddy.get("report") else "🐱 无结论"
     trae_line = mark[trae_ok] + trae["report"]
+    qoder_line = mark[qoder_ok] + qoder["report"]
 
     # 推送状态与业务结论分开呈现：失败原因可诊断，但不污染签到结论
     push_ok, push_reason = None, "未配置（缺少 FEISHU_WEBHOOK，本次不推送）"
     if webhook:
         push_ok, push_reason = push_feishu(webhook, [("WorkBuddy 签到", checkin_line),
                                                      ("WorkBuddy 猫猫旅行", buddy_line),
-                                                     ("Trae 签到", trae_line)], overall_ok)
+                                                     ("Trae 签到", trae_line),
+                                                     ("Qoder CN 领取 Credits", qoder_line)], overall_ok)
 
     result = {
         "checkin": {"ok": checkin_ok, **checkin},
         "buddy": {k: v for k, v in buddy.items() if k != "notes"},
         "trae": {"ok": trae_ok, **trae},
+        "qoder": {"ok": qoder_ok, **qoder},
         "push": {"ok": push_ok, "reason": push_reason},
         "overall_ok": overall_ok,
     }
@@ -597,6 +729,7 @@ def main():
                 f.write("| WorkBuddy 签到 | %s |\n" % checkin_line)
                 f.write("| WorkBuddy 猫猫旅行 | %s |\n" % buddy_line)
                 f.write("| Trae 签到 | %s |\n" % trae_line)
+                f.write("| Qoder CN 领取 Credits | %s |\n" % qoder_line)
                 f.write("| 飞书推送 | %s |\n" % push_line)
                 f.write("| 整体 | %s |\n" % ("成功（已配置的签到均已达成）" if overall_ok
                                             else "失败（有签到未达成）"))

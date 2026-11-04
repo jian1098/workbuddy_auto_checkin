@@ -1,8 +1,8 @@
 # workbuddy_auto_checkin
 
-WorkBuddy「Buddy 加油站」的每日自动化：**签到领积分**、**派猫猫旅行并领回礼物**，外加 **Trae（国内版 trae.cn）每日签到领积分**，结果推送到飞书。
+WorkBuddy「Buddy 加油站」的每日自动化：**签到领积分**、**派猫猫旅行并领回礼物**，外加 **Trae（国内版 trae.cn）每日签到领积分** 与 **Qoder CN 每日领取 Credits**，结果推送到飞书。
 
-> Trae 签到只在 GitHub Actions 版里有，WPS 金山文档版目前只做 WorkBuddy。
+> Trae 与 Qoder 签到只在 GitHub Actions 版里有，WPS 金山文档版目前只做 WorkBuddy。
 
 跑在 GitHub Actions 上，按 cron 每天定时执行，不需要任何常开设备。
 
@@ -23,8 +23,8 @@ WorkBuddy「Buddy 加油站」的每日自动化：**签到领积分**、**派�
 ## 特性
 
 - **云端定时** — 免费 runner + `schedule` 触发，本机关机照常执行
-- **一次做两件事** — 签到与成长中心旅行在同一次运行里完成
-- **幂等** — 先查状态再决定是否领取；已签不重领，已派不重派
+- **一次做多件事** — 签到、成长中心旅行、Trae 签到、Qoder 领取 Credits 在同一次运行里完成
+- **幂等** — 先查状态再决定是否领取；已签不重领，已派不重派，Qoder 重复领取服务端幂等返回 `CLAIMED`
 - **结论解耦** — 猫猫模块任何异常都不影响签到结论；整体成败只看签到
 - **零明文入库** — 仓库不含任何凭据；token 由本机脚本导出后写入 GitHub Secret
 
@@ -172,10 +172,28 @@ python refresh_trae_token.py                                             # 没�
 - **和本机 auto-checkin 共用同一个 refreshToken 时**：如果服务端换 token 时让旧 refreshToken 失效，两边会互相挤掉。
   出现「refreshToken 被拒」就重跑 `refresh_trae_token.py` 更新 Secret。
 
+**可选：顺带签 Qoder CN** —— 再加一条 Secret（不加就跳过，飞书里 Qoder 一栏显示「跳过」）：
+
+| Name | Secret 里填什么 |
+| --- | --- |
+| `QODER_TOKEN` | Qoder CN 桌面端登录态里解出的访问令牌（必填） |
+| `QODER_BASE_URL` | API 域（选填，仅当令牌不是 CN 版签发时需要） |
+
+令牌用仓库里的 `refresh_qoder_token.py` 拿（只能在装有并登录过 **Qoder CN 桌面端**的 Windows 电脑上跑）：
+
+```
+python refresh_qoder_token.py --gh-repo 你的用户名/workbuddy_auto_checkin   # 装了 gh：自动写入 Secret
+python refresh_qoder_token.py                                             # 没装 gh：打印出来手动粘贴
+```
+
+脚本从 `%APPDATA%\com.qodercn.app*` 读 `auth.v1.dat`，用本机 DPAPI + AES-256-GCM 解出会话里的令牌
+（解密链参考 [auto-signin-kit](https://github.com/hiclaw168-163/auto-signin-kit)（MIT）的 qoder 域实现）。
+脚本会显示令牌有效期；到期后（云端报 HTTP 401）打开 Qoder 桌面端重新登录，再重跑一次即可。
+
 ### 第 6 步：手动跑一次验证
 
 1. 打开你的仓库 → 点上方 **Actions** 页签
-2. 左侧选 **WorkBuddy&Trae每日签到自动化**
+2. 左侧选 **WorkBuddy&Trae&Qoder每日签到自动化**
 3. 右侧点 **Run workflow** 下拉，再点绿色的 **Run workflow**
 4. 等十几秒，刷新页面，飞书应该收到一条消息
 
@@ -191,11 +209,13 @@ python refresh_trae_token.py                                             # 没�
 | `TRAE_REFRESH_TOKEN` | 否† | — | Trae refreshToken，每次运行换一次 accessToken。缺失则跳过 Trae |
 | `TRAE_DEVICE_ID` | 建议 | 服务端 `BoundDeviceID` | Trae 客户端 16 位设备号，签到按设备去重 |
 | `TRAE_USER_ID` | 否 | — | Trae 用户 ID，换 token 时一并提交 |
+| `QODER_TOKEN` | 否† | — | Qoder CN 访问令牌。缺失则跳过 Qoder |
+| `QODER_BASE_URL` | 否 | `https://openapi.qoder.com.cn` | Qoder API 域；令牌只对签发它的端点有效，国际版客户端需覆盖 |
 | `FEISHU_WEBHOOK` | 建议 | — | 飞书自定义机器人地址。缺失则不推送，仅打印日志 |
 | `WB_ENDPOINT` | 否 | `https://copilot.tencent.com` | 接口地址 |
 | `WB_RESULT_FILE` | 否 | — | 写入 Markdown 汇总表，供 Actions 的 step summary 使用 |
 
-† `WB_ACCESS_TOKEN` 与 `TRAE_REFRESH_TOKEN` 至少配一个，都没配则直接退出（exit 2）。
+† `WB_ACCESS_TOKEN`、`TRAE_REFRESH_TOKEN` 与 `QODER_TOKEN` 至少配一个，都没配则直接退出（exit 2）。
 
 ### 本机侧（`refresh_buddy_token.py`）
 
@@ -226,6 +246,10 @@ python refresh_trae_token.py                                             # 没�
 | Trae 今天已领 | 不重复领取 | `ALREADY` |
 | Trae 限流（9074） | 退避重试 3 次（20s / 40s），重试前先查状态 | `RATE_LIMIT` |
 | Trae refreshToken 被拒 / 认证失败 | 提示重跑 `refresh_trae_token.py` 更新 Secret | `AUTH` |
+| Qoder 有可领的 Credits 活动 | 逐个领取（服务端幂等） | `CLAIMED` |
+| Qoder 本周期已领过 | 不重复领取，汇报数额 | `ALREADY` |
+| Qoder 无活动 / 活动已结束 | 直接汇报，不做写操作 | `INACTIVE` |
+| Qoder 令牌被拒（401/403） | 提示桌面端重新登录后重跑 `refresh_qoder_token.py` | `AUTH` |
 | 未配置某一项凭证 | 该项跳过，不计入整体成败 | `SKIPPED` |
 
 派出名额的判断读服务端下发的 `daily_limit_reached`，而不是硬撞 `depart` 接口等它报错。
@@ -234,9 +258,9 @@ python refresh_trae_token.py                                             # 没�
 
 | 码 | 含义 |
 | --- | --- |
-| `0` | 已配置的签到（WorkBuddy / Trae）全部成功 |
+| `0` | 已配置的签到（WorkBuddy / Trae / Qoder）全部成功 |
 | `1` | 有签到未达成（猫猫失败不在此列） |
-| `2` | `WB_ACCESS_TOKEN` 与 `TRAE_REFRESH_TOKEN` 都没配 |
+| `2` | `WB_ACCESS_TOKEN`、`TRAE_REFRESH_TOKEN` 与 `QODER_TOKEN` 都没配 |
 
 workflow 中脚本以 `exit 0` 收尾，只对未完成项发 `::warning::`，因此一次运行显示绿色不代表签到一定成功——**以日志、step summary 与飞书卡片为准**。
 
@@ -265,15 +289,25 @@ POST api.trae.cn/trae/api/v2/pay/ide_user_ent_usage             查询当前积�
 
 鉴权头 `Authorization: Cloud-IDE-JWT <token>`，并带 `x-device-id`（设备去重）与 `X-User-Region: CN`。
 
+Qoder CN（协议细节参考 [auto-signin-kit](https://github.com/hiclaw168-163/auto-signin-kit)（MIT）的 qoder 域）：
+
+```text
+GET  openapi.qoder.com.cn/sash/api/v1/me/campaigns            查询活动列表
+POST openapi.qoder.com.cn/sash/api/v1/me/campaigns/{id}/claim 领取 Credits（空请求体，重复领取幂等返回 CLAIMED）
+```
+
+鉴权头 `Authorization: Bearer <token>`，且必须带 `Cosy-ClientType: 10`——缺这个头服务端返回空的活动列表。
+
 时间戳字段（`arrive_at` / `depart_at` / `server_now`）为**秒级**，与毫秒混用会算出错误的剩余时间。
 
 ## 项目结构
 
 ```text
-wb_auto.py                    云端执行主体：WorkBuddy 签到、领奖、派出，Trae 签到，推送
+wb_auto.py                    云端执行主体：WorkBuddy 签到、领奖、派出，Trae 签到，Qoder 领取 Credits，推送
 refresh_buddy_token.py        本机一次性操作：导出 WorkBuddy token / 写入 Secret
 refresh_buddy_token.exe       上者的免 Python 打包版（Windows x64，双击即用）
 refresh_trae_token.py         本机一次性操作：浏览器登录 Trae，导出 TRAE_* / 写入 Secret
+refresh_qoder_token.py        本机一次性操作：解密 Qoder CN 桌面端登录态，导出 QODER_TOKEN / 写入 Secret
 .github/workflows/daily.yml   cron 定义与执行步骤
 wps/                          WPS 金山文档版（脚本 + 说明，见 wps/README.md）
 ```
@@ -292,6 +326,8 @@ wps/                          WPS 金山文档版（脚本 + 说明，见 wps/RE
 ## 常见问题
 
 **令牌过期** — token 由客户端签发，有效期约 28 天（`expiresIn` 2419200）。日志或飞书出现「认证被拒」时，本机重跑 `python refresh_buddy_token.py --gh-repo OWNER/REPO` 覆盖即可（`OWNER/REPO` 换成你自己的仓库；exe 同理：`refresh_buddy_token.exe --gh-repo OWNER/REPO`）。
+
+**Qoder 令牌过期** — Qoder CN 的令牌由桌面端签发（`refresh_qoder_token.py` 会显示有效期）。云端报「登录态被拒（HTTP 401）」时：打开 Qoder CN 桌面端**重新登录**，再重跑 `python refresh_qoder_token.py --gh-repo OWNER/REPO` 更新 Secret。脚本不解 refresh token，不与桌面端争抢会话。
 
 **fork 之后 Actions 页签是空的** — fork 来的仓库默认不启用 Actions。进 Actions 页签，点页面中间的 **I understand my workflows, go ahead and enable them** 启用一次即可。
 
